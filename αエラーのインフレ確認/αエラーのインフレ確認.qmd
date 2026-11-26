@@ -1,0 +1,256 @@
+---
+title: "多重性に関するシミュレーション:αエラーのインフレの確認"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    embed-resources: true
+---
+
+## 1. 真の帰無仮説が2つの状況でいずれかが棄却できればいい場合
+
+### データの生成
+
+各群100例の2群比較のデータを生成
+
+＊2つの評価項目はそれぞれ独立に標準正規分布から生成
+
+[＊αエラーは帰無仮説のもと誤って有意になる確率のため、2群には差がないようにデータを生成]{style="color: red;"}
+
+```{r}
+set.seed(12345)
+
+nsim <- 20000 #シミュレーションの繰り返し回数
+n_per_group <- 100 #各群のサンプルサイズ
+
+sim_data <- do.call(
+  rbind,
+  lapply(1:nsim, function(i) {
+
+    data.frame(
+      SIMID = i,
+      USUBJID = 1:(2 * n_per_group),
+      TRT = rep(c("Control", "Treatment"), each = n_per_group),
+      Y1 = rnorm(2 * n_per_group, mean = 0, sd = 1), #Y1を標準正規分布から生成
+      Y2 = rnorm(2 * n_per_group, mean = 0, sd = 1) #Y1を標準正規分布から生成
+    )
+
+  })
+)
+
+head(sim_data)
+```
+
+### 各シミュレーションで群間比較
+
+1.  各シミュレーション(SIMIDごと)に、Y1, Y2それぞれに対してControl群とTreatment群を比較するStudentのt検定を実施
+
+2.  シミュレーション全体(20000)を通して、以下を算出
+
+    ・Y1だけ有意になった割合
+
+    ・Y2だけ有意になった割合
+
+    ・Y1あるいはY2のどちらか一方でも有意になった割合
+
+＊理論的には1-(0.95)\^2 = 0.0975 になる(おそらくシミュレーション回数が足りていないので若干インフレしている)
+
+```{r}
+result <- do.call(
+  rbind,
+  lapply(1:nsim, function(i) {
+
+    dat <- sim_data[sim_data$SIMID == i, ]
+
+    test1 <- t.test( #Y1に対するt検定
+      Y1 ~ TRT,
+      data = dat,
+      alternative = "two.sided",
+      var.equal = TRUE
+    )
+
+    test2 <- t.test( #Y2に対するt検定
+      Y2 ~ TRT,
+      data = dat,
+      alternative = "two.sided",
+      var.equal = TRUE
+    )
+
+    data.frame(
+      SIMID = i,
+      T1 = unname(test1$statistic),
+      P1 = test1$p.value,
+      T2 = unname(test2$statistic),
+      P2 = test2$p.value,
+      SIG1 = test1$p.value < 0.05, #Y1に対する検定の有意判定
+      SIG2 = test2$p.value < 0.05, #Y2に対する検定有意判定
+      OVERALL_SIG = ( #Y1, Y2いずれか一方でも有意になったものの判定
+        test1$p.value < 0.05 |
+        test2$p.value < 0.05
+      )
+    )
+  })
+)
+
+#割合の算出
+mean(result$SIG1)
+mean(result$SIG2)
+mean(result$OVERALL_SIG)
+```
+
+## 2. 真の帰無仮説が2つの状況でいずれかが棄却できればいい場合(検定統計量に相関がある場合)
+
+＊参考：統計検定1級 2025年の医薬生物学の問4
+
+### データの生成
+
+1.  真の帰無仮説が2つの状況でいずれかが棄却できればいい場合　のデータ生成部分に対して、Y1とY2の相関係数が0.5となるようにデータを生成
+
+```{r}
+library(MASS)
+
+set.seed(12345)
+
+nsim        <- 20000   # シミュレーションの繰り返し回数
+n_per_group <- 100      # 各群のサンプルサイズ
+rho         <- 0.5     # Y1とY2の相関係数
+
+Sigma <- matrix(c(1,   rho,
+                  rho, 1), nrow = 2, byrow = TRUE)
+
+sim_data_cor <- do.call(
+  rbind,
+  lapply(1:nsim, function(i) {
+    
+    # 被験者ごとに (Y1, Y2) を二変量正規分布から生成
+    Y <- mvrnorm(n = 2 * n_per_group, mu = c(0, 0), Sigma = Sigma)
+    
+    data.frame(
+      SIMID   = i,
+      USUBJID = 1:(2 * n_per_group),
+      TRT     = rep(c("Control", "Treatment"), each = n_per_group),
+      Y1      = Y[, 1],   # 標準正規分布(Y2との相関 ρ)
+      Y2      = Y[, 2]    # 標準正規分布(Y1との相関 ρ)
+    )
+    
+  })
+)
+
+head(sim_data_cor)
+
+# --- 確認 ---
+cor(sim_data_cor$Y1, sim_data_cor$Y2)   # ほぼ 0.5
+tapply(sim_data_cor$Y1, sim_data_cor$TRT, mean)   # ほぼ 0
+```
+
+### 各シミュレーションで群間比較
+
+1.  帰無仮説が2つの状況でいずれかが棄却できればいい場合と同様
+
+＊理論的には2α - Φ(ρ) より、0.087となる (おそらくシミュレーション回数が足りていないので若干インフレしている)
+
+```{r}
+result_cor <- do.call(
+  rbind,
+  lapply(1:nsim, function(i) {
+    
+    dat <- sim_data_cor[sim_data$SIMID == i, ]
+    
+    test1 <- t.test( #Y1に対するt検定
+      Y1 ~ TRT,
+      data = dat,
+      alternative = "two.sided",
+      var.equal = TRUE
+    )
+    
+    test2 <- t.test( #Y2に対するt検定
+      Y2 ~ TRT,
+      data = dat,
+      alternative = "two.sided",
+      var.equal = TRUE
+    )
+    
+    data.frame(
+      SIMID = i,
+      T1 = unname(test1$statistic),
+      P1 = test1$p.value,
+      T2 = unname(test2$statistic),
+      P2 = test2$p.value,
+      SIG1 = test1$p.value < 0.05, #Y1に対する検定の有意判定
+      SIG2 = test2$p.value < 0.05, #Y2に対する検定有意判定
+      OVERALL_SIG = ( #Y1, Y2いずれか一方でも有意になったものの判定
+        test1$p.value < 0.05 |
+          test2$p.value < 0.05
+      )
+    )
+  })
+)
+
+#割合の算出
+mean(result_cor$SIG1)
+mean(result_cor$SIG2)
+mean(result_cor$OVERALL_SIG)
+```
+
+## 3. 帰無仮説が2つの状況でどちらも棄却する必要がある場合
+
+### データの生成
+
+1.  帰無仮説が2つの状況でいずれかが棄却できればいい場合と同様
+
+### 各シミュレーションで群間比較
+
+1.  各シミュレーション(SIMIDごと)に、Y1, Y2それぞれに対してControl群とTreatment群を比較するStudentのt検定を実施
+
+2.  シミュレーション全体(20000)を通して、以下を算出
+
+    ・Y1だけ有意になった割合
+
+    ・Y2だけ有意になった割合
+
+    ・Y1とY2が両方とも有意になった割合
+
+    ＊理論的には(1-0.95)\^2=0.0025となる
+
+```{r}
+result <- do.call(
+  rbind,
+  lapply(1:nsim, function(i) {
+
+    dat <- sim_data[sim_data$SIMID == i, ]
+
+    test1 <- t.test( #Y1に対するt検定
+      Y1 ~ TRT,
+      data = dat,
+      alternative = "two.sided",
+      var.equal = TRUE
+    )
+
+    test2 <- t.test( #Y2に対するt検定
+      Y2 ~ TRT,
+      data = dat,
+      alternative = "two.sided",
+      var.equal = TRUE
+    )
+
+    data.frame(
+      SIMID = i,
+      T1 = unname(test1$statistic),
+      P1 = test1$p.value,
+      T2 = unname(test2$statistic),
+      P2 = test2$p.value,
+      SIG1 = test1$p.value < 0.05, #Y1に対する検定の有意判定
+      SIG2 = test2$p.value < 0.05, #Y2に対する検定有意判定
+      OVERALL_SIG = ( #Y1, Y2両方とも有意になったものの判定
+        test1$p.value < 0.05 &
+        test2$p.value < 0.05
+      )
+    )
+  })
+)
+
+#割合の算出
+mean(result$SIG1)
+mean(result$SIG2)
+mean(result$OVERALL_SIG)
+```
